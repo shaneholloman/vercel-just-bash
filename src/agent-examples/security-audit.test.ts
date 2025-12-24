@@ -269,3 +269,151 @@ DATABASE_URL
     expect(result.exitCode).toBe(0);
   });
 });
+
+describe("Agent Scenario: File Permission Audit with find -perm", () => {
+  const createPermEnv = () =>
+    new BashEnv({
+      files: {
+        "/server/bin/start.sh": { content: "#!/bin/bash\nnode app.js", mode: 0o755 },
+        "/server/bin/deploy.sh": { content: "#!/bin/bash\n# deploy script", mode: 0o755 },
+        "/server/bin/backup.sh": { content: "#!/bin/bash\n# backup", mode: 0o700 },
+        "/server/config/app.json": { content: '{"port": 3000}', mode: 0o644 },
+        "/server/config/secrets.json": { content: '{"key": "secret"}', mode: 0o600 },
+        "/server/config/db.json": { content: '{"host": "localhost"}', mode: 0o644 },
+        "/server/logs/app.log": { content: "log data", mode: 0o644 },
+        "/server/logs/error.log": { content: "errors", mode: 0o644 },
+        "/server/data/users.db": { content: "user data", mode: 0o600 },
+        "/server/data/cache.db": { content: "cache", mode: 0o666 },
+        "/server/scripts/cleanup.sh": { content: "#!/bin/bash", mode: 0o777 },
+        "/server/scripts/migrate.sh": { content: "#!/bin/bash", mode: 0o755 },
+      },
+      cwd: "/server",
+    });
+
+  describe("Finding executable files", () => {
+    it("should find all executable scripts", async () => {
+      const env = createPermEnv();
+      const result = await env.exec("find /server -type f -perm -100");
+      expect(result.stdout).toContain("/server/bin/start.sh");
+      expect(result.stdout).toContain("/server/bin/deploy.sh");
+      expect(result.stdout).toContain("/server/bin/backup.sh");
+      expect(result.stdout).toContain("/server/scripts/cleanup.sh");
+      expect(result.stdout).not.toContain("app.json");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find world-executable files (security concern)", async () => {
+      const env = createPermEnv();
+      // Files with other-execute bit set (potentially dangerous)
+      const result = await env.exec("find /server -type f -perm -001");
+      expect(result.stdout).toContain("/server/scripts/cleanup.sh");
+      expect(result.stdout).toContain("/server/bin/start.sh");
+      expect(result.stdout).not.toContain("backup.sh"); // 0o700 has no other-execute
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Finding overly permissive files", () => {
+    it("should find world-writable files (security risk)", async () => {
+      const env = createPermEnv();
+      // Files with 666 or 777 permissions (world-writable)
+      const result = await env.exec("find /server -type f -perm -002");
+      expect(result.stdout).toContain("/server/data/cache.db");
+      expect(result.stdout).toContain("/server/scripts/cleanup.sh");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find files with exact 777 permissions", async () => {
+      const env = createPermEnv();
+      const result = await env.exec("find /server -type f -perm 777");
+      expect(result.stdout.trim()).toBe("/server/scripts/cleanup.sh");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find files with exact 666 permissions", async () => {
+      const env = createPermEnv();
+      const result = await env.exec("find /server -type f -perm 666");
+      expect(result.stdout.trim()).toBe("/server/data/cache.db");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Finding properly secured files", () => {
+    it("should find files with restricted permissions (600)", async () => {
+      const env = createPermEnv();
+      const result = await env.exec("find /server -type f -perm 600");
+      expect(result.stdout).toContain("/server/config/secrets.json");
+      expect(result.stdout).toContain("/server/data/users.db");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find owner-only readable files", async () => {
+      const env = createPermEnv();
+      // Files where only owner has read (no group or world read)
+      const result = await env.exec("find /server/config -type f -perm 600");
+      expect(result.stdout).toContain("secrets.json");
+      expect(result.stdout).not.toContain("app.json");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Finding files with any specific permission", () => {
+    it("should find files with any execute bit set", async () => {
+      const env = createPermEnv();
+      // /111 = any of user/group/other execute bits
+      const result = await env.exec("find /server -type f -perm /111");
+      expect(result.stdout).toContain("start.sh");
+      expect(result.stdout).toContain("deploy.sh");
+      expect(result.stdout).toContain("backup.sh");
+      expect(result.stdout).toContain("cleanup.sh");
+      expect(result.stdout).not.toContain("app.json");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find files with any write bit for group or other", async () => {
+      const env = createPermEnv();
+      // /022 = group-write OR other-write
+      const result = await env.exec("find /server -type f -perm /022");
+      expect(result.stdout).toContain("cache.db");
+      expect(result.stdout).toContain("cleanup.sh");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Security audit workflow", () => {
+    it("should audit sensitive config files permissions", async () => {
+      const env = createPermEnv();
+      // Check that secrets.json is properly secured (600)
+      const result = await env.exec(
+        'find /server/config -name "secret*" -type f -perm 600',
+      );
+      expect(result.stdout).toContain("secrets.json");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find scripts that need permission review", async () => {
+      const env = createPermEnv();
+      // Find all .sh files and check for overly permissive ones
+      const allScripts = await env.exec('find /server -name "*.sh" -type f');
+      const dangerousScripts = await env.exec(
+        'find /server -name "*.sh" -type f -perm -002',
+      );
+
+      expect(allScripts.stdout).toContain("start.sh");
+      expect(allScripts.stdout).toContain("cleanup.sh");
+      // Only cleanup.sh should be flagged as world-writable
+      expect(dangerousScripts.stdout.trim()).toBe("/server/scripts/cleanup.sh");
+    });
+
+    it("should find database files with incorrect permissions", async () => {
+      const env = createPermEnv();
+      // DB files should not be world-readable
+      const result = await env.exec(
+        'find /server/data -name "*.db" -type f -perm /044',
+      );
+      // cache.db is 666 (world-readable/writable) - security issue
+      expect(result.stdout).toContain("cache.db");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

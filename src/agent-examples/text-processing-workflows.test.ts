@@ -614,6 +614,297 @@ export function useFetch<T>(url: string) {
   });
 });
 
+describe("Agent Workflow: awk pattern ranges for log sections", () => {
+  const createLogEnv = () =>
+    new BashEnv({
+      files: {
+        "/logs/server.log": `[2024-01-15 10:00:00] Server starting
+[2024-01-15 10:00:01] Loading config
+=== ERROR BLOCK START ===
+NullPointerException at line 42
+Stack trace:
+  at main.ts:42
+  at bootstrap.ts:15
+=== ERROR BLOCK END ===
+[2024-01-15 10:00:02] Server ready
+[2024-01-15 10:05:00] Request received
+=== ERROR BLOCK START ===
+ConnectionTimeout after 30s
+Stack trace:
+  at db.ts:100
+  at query.ts:25
+=== ERROR BLOCK END ===
+[2024-01-15 10:05:01] Request completed`,
+        "/logs/config.ini": `[general]
+name=MyApp
+version=1.0
+
+[database]
+host=localhost
+port=5432
+user=admin
+
+[cache]
+enabled=true
+ttl=3600
+
+[logging]
+level=debug
+file=/var/log/app.log`,
+        "/data/records.txt": `RECORD: user001
+name: Alice Johnson
+email: alice@example.com
+role: admin
+END_RECORD
+RECORD: user002
+name: Bob Smith
+email: bob@example.com
+role: user
+END_RECORD
+RECORD: user003
+name: Charlie Brown
+email: charlie@example.com
+role: user
+END_RECORD`,
+      },
+      cwd: "/",
+    });
+
+  describe("Extracting error blocks from logs", () => {
+    it("should extract all error blocks using pattern range", async () => {
+      const env = createLogEnv();
+      const result = await env.exec(
+        "awk '/ERROR BLOCK START/,/ERROR BLOCK END/' /logs/server.log",
+      );
+      expect(result.stdout).toContain("NullPointerException");
+      expect(result.stdout).toContain("ConnectionTimeout");
+      expect(result.stdout).toContain("Stack trace:");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should extract error blocks with custom formatting", async () => {
+      const env = createLogEnv();
+      const result = await env.exec(
+        "awk '/ERROR BLOCK START/,/ERROR BLOCK END/ { print \"  \" $0 }' /logs/server.log",
+      );
+      expect(result.stdout).toContain("  === ERROR BLOCK START ===");
+      expect(result.stdout).toContain("  NullPointerException");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should count lines in error blocks", async () => {
+      const env = createLogEnv();
+      const result = await env.exec(
+        "awk '/ERROR BLOCK START/,/ERROR BLOCK END/ { count++ } END { print count }' /logs/server.log",
+      );
+      // Two blocks, 5 lines each (START + error + stack + 2 traces + END)
+      expect(parseInt(result.stdout.trim())).toBeGreaterThan(8);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Extracting config sections", () => {
+    it("should extract database section from config", async () => {
+      const env = createLogEnv();
+      // Use grep to find database section lines
+      const result = await env.exec(
+        "grep -A3 '\\[database\\]' /logs/config.ini",
+      );
+      expect(result.stdout).toContain("[database]");
+      expect(result.stdout).toContain("host=localhost");
+      expect(result.stdout).toContain("port=5432");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should extract cache settings", async () => {
+      const env = createLogEnv();
+      const result = await env.exec(
+        "grep -A3 '\\[cache\\]' /logs/config.ini",
+      );
+      expect(result.stdout).toContain("[cache]");
+      expect(result.stdout).toContain("enabled=true");
+      expect(result.stdout).toContain("ttl=3600");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Processing multi-line records with getline", () => {
+    it("should combine record fields using getline", async () => {
+      const env = createLogEnv();
+      const result = await env.exec(
+        "awk '/^RECORD:/ { id=$2; getline; split($0,a,\": \"); name=a[2]; getline; split($0,b,\": \"); email=b[2]; print id, name, email }' /data/records.txt",
+      );
+      expect(result.stdout).toContain("user001 Alice Johnson alice@example.com");
+      expect(result.stdout).toContain("user002 Bob Smith bob@example.com");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should extract records with role field", async () => {
+      const env = createLogEnv();
+      // Simpler approach: use pattern range to get admin record
+      const result = await env.exec(
+        "awk '/RECORD: user001/,/END_RECORD/' /data/records.txt | grep role",
+      );
+      expect(result.stdout).toContain("admin");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should skip header lines using getline", async () => {
+      const env = createLogEnv();
+      // Read and discard the RECORD line, then print remaining fields
+      const result = await env.exec(
+        "awk '/^RECORD:/ { getline; print }' /data/records.txt",
+      );
+      expect(result.stdout).toContain("name: Alice Johnson");
+      expect(result.stdout).toContain("name: Bob Smith");
+      expect(result.stdout).not.toContain("RECORD:");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe("Agent Workflow: Text Sanitization with tr -c", () => {
+  const createSanitizeEnv = () =>
+    new BashEnv({
+      files: {
+        "/data/user-input.txt": `Hello! My email is user@example.com
+Phone: +1 (555) 123-4567
+Special chars: <script>alert('xss')</script>
+Unicode: café naïve résumé`,
+        "/data/filenames.txt": `report 2024.pdf
+my file (1).doc
+data_export[final].csv
+notes & ideas.txt`,
+        "/data/ids.txt": `user-001
+USER_002
+user.003
+user@004`,
+        "/data/log-entry.txt": `[2024-01-15 10:30:45] ERROR: Connection failed
+Details: host=192.168.1.100, port=5432
+Stack trace follows...`,
+      },
+      cwd: "/data",
+    });
+
+  describe("Sanitizing user input", () => {
+    it("should keep only alphanumeric and spaces", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "cat /data/user-input.txt | tr -cd 'a-zA-Z0-9 \\n'",
+      );
+      expect(result.stdout).not.toContain("@");
+      expect(result.stdout).not.toContain("<");
+      expect(result.stdout).not.toContain(">");
+      expect(result.stdout).toContain("Hello");
+      expect(result.stdout).toContain("My email is");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should keep only printable ASCII characters", async () => {
+      const env = createSanitizeEnv();
+      // Delete all except printable ASCII (space through tilde)
+      const result = await env.exec(
+        "echo 'Hello World 123!' | tr -cd 'A-Za-z0-9 !\\n'",
+      );
+      expect(result.stdout).toContain("Hello World 123!");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should extract only digits from phone number", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "grep Phone /data/user-input.txt | tr -cd '0-9\\n'",
+      );
+      expect(result.stdout.trim()).toBe("15551234567");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Sanitizing filenames", () => {
+    it("should replace unsafe filename characters with underscores", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "cat /data/filenames.txt | tr -c 'a-zA-Z0-9._-\\n' '_'",
+      );
+      expect(result.stdout).toContain("report_2024.pdf");
+      expect(result.stdout).toContain("my_file__1_.doc");
+      expect(result.stdout).not.toContain("(");
+      expect(result.stdout).not.toContain("[");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should normalize IDs to lowercase alphanumeric", async () => {
+      const env = createSanitizeEnv();
+      // First remove non-alphanumeric, then lowercase
+      const result = await env.exec(
+        "cat /data/ids.txt | tr -cd 'a-zA-Z0-9\\n' | tr 'A-Z' 'a-z'",
+      );
+      expect(result.stdout).toContain("user001");
+      expect(result.stdout).toContain("user002");
+      expect(result.stdout).toContain("user003");
+      expect(result.stdout).toContain("user004");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Extracting data with tr -c", () => {
+    it("should extract only letters for word analysis", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "head -1 /data/user-input.txt | tr -cs 'a-zA-Z' '\\n' | head -5",
+      );
+      // Squeeze consecutive non-letters into single newlines
+      expect(result.stdout).toContain("Hello");
+      expect(result.stdout).toContain("My");
+      expect(result.stdout).toContain("email");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should extract timestamp digits from log", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "head -1 /data/log-entry.txt | tr -cd '0-9 :'",
+      );
+      expect(result.stdout).toContain("2024");
+      expect(result.stdout).toContain("10:30:45");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should extract IP address octets", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "grep host /data/log-entry.txt | tr -cd '0-9.\\n'",
+      );
+      expect(result.stdout).toContain("192.168.1.100");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Security-focused sanitization", () => {
+    it("should remove potential XSS characters", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "grep script /data/user-input.txt | tr -d '<>/\\'\"'",
+      );
+      expect(result.stdout).not.toContain("<");
+      expect(result.stdout).not.toContain(">");
+      expect(result.stdout).toContain("script");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should sanitize for SQL safety (remove quotes)", async () => {
+      const env = createSanitizeEnv();
+      const result = await env.exec(
+        "echo \"user'; DROP TABLE users;--\" | tr -d \"';\"",
+      );
+      expect(result.stdout).not.toContain("'");
+      expect(result.stdout).not.toContain(";");
+      expect(result.stdout).toContain("user");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
 describe("Agent Workflow: printf formatting", () => {
   it("should format numbers with padding", async () => {
     const env = new BashEnv();

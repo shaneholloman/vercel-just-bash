@@ -178,3 +178,129 @@ export { Logger } from './logger';
     expect(result.exitCode).toBe(0);
   });
 });
+
+describe("Agent Scenario: Disk Usage Analysis with ls -h and du -h", () => {
+  const createDiskEnv = () =>
+    new BashEnv({
+      files: {
+        // Small config files
+        "/project/package.json": { content: '{"name": "app"}', mode: 0o644 },
+        "/project/tsconfig.json": { content: '{"target": "es2020"}', mode: 0o644 },
+        // Source files of varying sizes
+        "/project/src/index.ts": { content: "a".repeat(500), mode: 0o644 },
+        "/project/src/utils.ts": { content: "b".repeat(2 * 1024), mode: 0o644 }, // 2K
+        "/project/src/api.ts": { content: "c".repeat(5 * 1024), mode: 0o644 }, // 5K
+        // Large build artifacts
+        "/project/dist/bundle.js": { content: "d".repeat(150 * 1024), mode: 0o644 }, // 150K
+        "/project/dist/bundle.js.map": { content: "e".repeat(300 * 1024), mode: 0o644 }, // 300K
+        // Node modules simulation
+        "/project/node_modules/lodash/index.js": { content: "f".repeat(500 * 1024), mode: 0o644 }, // 500K
+        "/project/node_modules/lodash/package.json": { content: '{"name": "lodash"}', mode: 0o644 },
+        "/project/node_modules/express/index.js": { content: "g".repeat(200 * 1024), mode: 0o644 }, // 200K
+        // Log files
+        "/project/logs/app.log": { content: "h".repeat(1024 * 1024), mode: 0o644 }, // 1M
+        "/project/logs/error.log": { content: "i".repeat(50 * 1024), mode: 0o644 }, // 50K
+      },
+      cwd: "/project",
+    });
+
+  describe("Human-readable file sizes with ls -lh", () => {
+    it("should display file sizes in human-readable format", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("ls -lh /project/dist");
+      expect(result.stdout).toMatch(/150K.*bundle\.js/);
+      expect(result.stdout).toMatch(/300K.*bundle\.js\.map/);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should show large node_modules with -h flag", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("ls -lh /project/node_modules/lodash");
+      expect(result.stdout).toMatch(/500K.*index\.js/);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should display megabyte-sized log files", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("ls -lh /project/logs");
+      expect(result.stdout).toMatch(/1\.0M.*app\.log/);
+      expect(result.stdout).toMatch(/50K.*error\.log/);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should show small source files in bytes", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("ls -lh /project/src");
+      expect(result.stdout).toContain("500"); // 500 bytes
+      expect(result.stdout).toContain("2.0K"); // 2K file
+      expect(result.stdout).toContain("5.0K"); // 5K file
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Directory size analysis with du -h", () => {
+    it("should show directory sizes in human-readable format", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("du -h /project/dist");
+      expect(result.stdout).toMatch(/K.*\/project\/dist/);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should summarize node_modules size", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("du -sh /project/node_modules");
+      // Should show total size of node_modules
+      expect(result.stdout).toContain("/project/node_modules");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should show all file sizes with du -ah", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("du -ah /project/logs");
+      expect(result.stdout).toContain("app.log");
+      expect(result.stdout).toContain("error.log");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Disk usage workflow for agents", () => {
+    it("should identify largest files in build output", async () => {
+      const env = createDiskEnv();
+      // Agent checking build artifacts
+      const result = await env.exec("ls -lhS /project/dist");
+      // -S sorts by size (largest first)
+      expect(result.stdout).toContain("bundle.js.map");
+      expect(result.stdout).toContain("bundle.js");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should check log file sizes for rotation needs", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("ls -lh /project/logs/app.log");
+      expect(result.stdout).toMatch(/1\.0M/);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should compare source vs build sizes", async () => {
+      const env = createDiskEnv();
+      const srcSize = await env.exec("du -sh /project/src");
+      const distSize = await env.exec("du -sh /project/dist");
+
+      expect(srcSize.stdout).toContain("/project/src");
+      expect(distSize.stdout).toContain("/project/dist");
+      // Both should have human-readable sizes
+      expect(srcSize.exitCode).toBe(0);
+      expect(distSize.exitCode).toBe(0);
+    });
+
+    it("should audit disk usage by directory", async () => {
+      const env = createDiskEnv();
+      const result = await env.exec("du -h --max-depth=1 /project");
+      expect(result.stdout).toContain("/project/src");
+      expect(result.stdout).toContain("/project/dist");
+      expect(result.stdout).toContain("/project/node_modules");
+      expect(result.stdout).toContain("/project/logs");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

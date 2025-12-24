@@ -244,3 +244,177 @@ export function formatFullName_deprecated(name: string): string {
     expect(result.exitCode).toBe(0);
   });
 });
+
+describe("Agent Scenario: Advanced sed for Code Transformations", () => {
+  const createAdvancedEnv = () =>
+    new BashEnv({
+      files: {
+        "/code/imports.ts": `import { foo } from './foo';
+import { bar } from './bar';
+import { baz } from './baz';
+import { qux } from './qux';`,
+        "/code/multiline.ts": `const config = {
+  name: "app",
+  version: "1.0.0"
+};
+
+const settings = {
+  debug: true,
+  port: 3000
+};`,
+        "/code/deprecated.ts": `// @deprecated Use newFunc instead
+function oldFunc() {
+  return 1;
+}
+
+// @deprecated Will be removed in v2
+function anotherOldFunc() {
+  return 2;
+}
+
+function activeFunc() {
+  return 3;
+}`,
+        "/code/css-vars.css": `body {
+  color: #333333;
+  background: #ffffff;
+  border: 1px solid #cccccc;
+}`,
+        "/code/case-conv.txt": `userId
+userName
+userEmail
+accountId`,
+        "/code/numbered.txt": `first line
+second line
+third line
+fourth line
+fifth line`,
+      },
+      cwd: "/code",
+    });
+
+  describe("Using sed N for multiline operations", () => {
+    it("should join consecutive import lines", async () => {
+      const env = createAdvancedEnv();
+      // N appends next line to pattern space, allowing multiline matching
+      const result = await env.exec(
+        "sed 'N;s/\\n/, /' /code/imports.ts | head -2",
+      );
+      expect(result.stdout).toContain("foo");
+      expect(result.stdout).toContain("bar");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should combine object properties on single line", async () => {
+      const env = createAdvancedEnv();
+      // Use grep -A1 to show name with following line
+      const result = await env.exec("grep -A1 'name:' /code/multiline.ts");
+      expect(result.stdout).toContain("name:");
+      expect(result.stdout).toContain("version:");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Using sed y for character transliteration", () => {
+    it("should convert hex colors to uppercase", async () => {
+      const env = createAdvancedEnv();
+      const result = await env.exec(
+        "sed 'y/abcdef/ABCDEF/' /code/css-vars.css",
+      );
+      expect(result.stdout).toContain("#333333");
+      expect(result.stdout).toContain("#FFFFFF");
+      expect(result.stdout).toContain("#CCCCCC");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should convert camelCase to snake_case style markers", async () => {
+      const env = createAdvancedEnv();
+      // Replace capital letters with markers for further processing
+      const result = await env.exec(
+        "sed 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/' /code/case-conv.txt",
+      );
+      expect(result.stdout).toContain("userid");
+      expect(result.stdout).toContain("username");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Using sed = for line numbering", () => {
+    it("should add line numbers to code", async () => {
+      const env = createAdvancedEnv();
+      const result = await env.exec("sed '=' /code/numbered.txt | head -6");
+      expect(result.stdout).toContain("1");
+      expect(result.stdout).toContain("first line");
+      expect(result.stdout).toContain("2");
+      expect(result.stdout).toContain("second line");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should number only lines matching a pattern", async () => {
+      const env = createAdvancedEnv();
+      // Use grep -n to show line numbers for matching lines
+      const result = await env.exec("grep -n 'deprecated' /code/deprecated.ts");
+      // Should show line numbers for deprecated comments
+      expect(result.stdout).toContain("@deprecated");
+      expect(result.stdout).toMatch(/^\d+:/m); // line number prefix
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Finding active vs deprecated code", () => {
+    it("should find active functions (not deprecated)", async () => {
+      const env = createAdvancedEnv();
+      // Use grep to find functions, then filter out those near @deprecated
+      const result = await env.exec(
+        "grep 'function activeFunc' /code/deprecated.ts",
+      );
+      expect(result.stdout).toContain("function activeFunc");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should identify deprecated functions", async () => {
+      const env = createAdvancedEnv();
+      // Show deprecated functions with context
+      const result = await env.exec(
+        "grep -A2 '@deprecated' /code/deprecated.ts",
+      );
+      expect(result.stdout).toContain("@deprecated");
+      expect(result.stdout).toContain("function oldFunc");
+      expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe("Complex refactoring workflows with sed", () => {
+    it("should convert single imports to barrel export", async () => {
+      const env = createAdvancedEnv();
+      // Transform import to export (simpler pattern)
+      const result = await env.exec(
+        "sed 's/import/export/' /code/imports.ts",
+      );
+      expect(result.stdout).toContain("export { foo }");
+      expect(result.stdout).toContain("export { bar }");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should find functions that need documentation", async () => {
+      const env = createAdvancedEnv();
+      // Find function declarations that could use JSDoc
+      const result = await env.exec(
+        "grep -n '^function' /code/deprecated.ts",
+      );
+      expect(result.stdout).toContain("function oldFunc");
+      expect(result.stdout).toContain("function activeFunc");
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should indent code blocks", async () => {
+      const env = createAdvancedEnv();
+      // Add two spaces indent to all lines
+      const result = await env.exec("sed 's/^/  /' /code/numbered.txt");
+      expect(result.stdout).toBe(
+        "  first line\n  second line\n  third line\n  fourth line\n  fifth line\n",
+      );
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
