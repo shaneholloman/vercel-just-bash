@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { BashEnv } from "../../BashEnv.js";
 
+/** Format date in local timezone as YYYY-MM-DD */
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 describe("date", () => {
   describe("format specifiers", () => {
     it("should format year with %Y", async () => {
@@ -186,7 +194,8 @@ describe("date", () => {
     it("should parse 'today'", async () => {
       const env = new BashEnv();
       const result = await env.exec("date -d today +%F");
-      const today = new Date().toISOString().slice(0, 10);
+      // Use local date formatting to match date command behavior
+      const today = formatLocalDate(new Date());
       expect(result.stdout).toBe(`${today}\n`);
       expect(result.exitCode).toBe(0);
     });
@@ -194,20 +203,18 @@ describe("date", () => {
     it("should parse 'yesterday'", async () => {
       const env = new BashEnv();
       const result = await env.exec("date -d yesterday +%F");
-      const yesterday = new Date(Date.now() - 86400000)
-        .toISOString()
-        .slice(0, 10);
-      expect(result.stdout).toBe(`${yesterday}\n`);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      expect(result.stdout).toBe(`${formatLocalDate(yesterday)}\n`);
       expect(result.exitCode).toBe(0);
     });
 
     it("should parse 'tomorrow'", async () => {
       const env = new BashEnv();
       const result = await env.exec("date -d tomorrow +%F");
-      const tomorrow = new Date(Date.now() + 86400000)
-        .toISOString()
-        .slice(0, 10);
-      expect(result.stdout).toBe(`${tomorrow}\n`);
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      expect(result.stdout).toBe(`${formatLocalDate(tomorrow)}\n`);
       expect(result.exitCode).toBe(0);
     });
   });

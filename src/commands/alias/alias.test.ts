@@ -48,6 +48,10 @@ describe("alias command", () => {
   });
 });
 
+// Note: Alias expansion is NOT implemented to match real bash behavior.
+// In non-interactive mode (scripts), bash does not expand aliases.
+// The alias command only stores/lists alias definitions.
+
 describe("unalias command", () => {
   it("should remove an alias", async () => {
     const env = new BashEnv();

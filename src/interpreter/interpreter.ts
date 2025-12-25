@@ -390,7 +390,6 @@ export class Interpreter {
     if (commandName === "read") {
       return handleRead(this.ctx, args, stdin);
     }
-
     // Test commands
     if (commandName === "[[") {
       const endIdx = args.lastIndexOf("]]");
