@@ -290,7 +290,169 @@ export async function evaluateTestArgs(
     }
   }
 
-  return { stdout: "", stderr: "", exitCode: 1 };
+  // Handle compound expressions with -a (AND) and -o (OR)
+  const result = await evaluateTestExpr(ctx, args, 0);
+  return { stdout: "", stderr: "", exitCode: result.value ? 0 : 1 };
+}
+
+// Recursive expression evaluator for test command
+async function evaluateTestExpr(
+  ctx: InterpreterContext,
+  args: string[],
+  pos: number,
+): Promise<{ value: boolean; pos: number }> {
+  return evaluateTestOr(ctx, args, pos);
+}
+
+async function evaluateTestOr(
+  ctx: InterpreterContext,
+  args: string[],
+  pos: number,
+): Promise<{ value: boolean; pos: number }> {
+  let { value, pos: newPos } = await evaluateTestAnd(ctx, args, pos);
+  while (args[newPos] === "-o") {
+    const right = await evaluateTestAnd(ctx, args, newPos + 1);
+    value = value || right.value;
+    newPos = right.pos;
+  }
+  return { value, pos: newPos };
+}
+
+async function evaluateTestAnd(
+  ctx: InterpreterContext,
+  args: string[],
+  pos: number,
+): Promise<{ value: boolean; pos: number }> {
+  let { value, pos: newPos } = await evaluateTestNot(ctx, args, pos);
+  while (args[newPos] === "-a") {
+    const right = await evaluateTestNot(ctx, args, newPos + 1);
+    value = value && right.value;
+    newPos = right.pos;
+  }
+  return { value, pos: newPos };
+}
+
+async function evaluateTestNot(
+  ctx: InterpreterContext,
+  args: string[],
+  pos: number,
+): Promise<{ value: boolean; pos: number }> {
+  if (args[pos] === "!") {
+    const { value, pos: newPos } = await evaluateTestNot(ctx, args, pos + 1);
+    return { value: !value, pos: newPos };
+  }
+  return evaluateTestPrimary(ctx, args, pos);
+}
+
+async function evaluateTestPrimary(
+  ctx: InterpreterContext,
+  args: string[],
+  pos: number,
+): Promise<{ value: boolean; pos: number }> {
+  const token = args[pos];
+
+  // Parentheses grouping
+  if (token === "(") {
+    const { value, pos: newPos } = await evaluateTestExpr(ctx, args, pos + 1);
+    // Skip closing )
+    return { value, pos: args[newPos] === ")" ? newPos + 1 : newPos };
+  }
+
+  // Unary file tests
+  const fileOps = ["-e", "-a", "-f", "-d", "-r", "-w", "-x", "-s", "-L", "-h"];
+  if (fileOps.includes(token)) {
+    const operand = args[pos + 1] ?? "";
+    const path = resolvePath(ctx, operand);
+
+    let value = false;
+    switch (token) {
+      case "-e":
+      case "-a":
+        value = await ctx.fs.exists(path);
+        break;
+      case "-f":
+        if (await ctx.fs.exists(path)) {
+          const stat = await ctx.fs.stat(path);
+          value = stat.isFile;
+        }
+        break;
+      case "-d":
+        if (await ctx.fs.exists(path)) {
+          const stat = await ctx.fs.stat(path);
+          value = stat.isDirectory;
+        }
+        break;
+      case "-r":
+      case "-w":
+      case "-x":
+        value = await ctx.fs.exists(path);
+        break;
+      case "-s":
+        if (await ctx.fs.exists(path)) {
+          const content = await ctx.fs.readFile(path);
+          value = content.length > 0;
+        }
+        break;
+      case "-L":
+      case "-h":
+        if (await ctx.fs.exists(path)) {
+          const stat = await ctx.fs.lstat(path);
+          value = stat.isSymbolicLink;
+        }
+        break;
+    }
+    return { value, pos: pos + 2 };
+  }
+
+  // Unary string tests
+  if (token === "-z") {
+    const operand = args[pos + 1] ?? "";
+    return { value: operand === "", pos: pos + 2 };
+  }
+  if (token === "-n") {
+    const operand = args[pos + 1] ?? "";
+    return { value: operand !== "", pos: pos + 2 };
+  }
+
+  // Check for binary operators
+  const next = args[pos + 1];
+  if (next === "=" || next === "==" || next === "!=") {
+    const left = token;
+    const right = args[pos + 2] ?? "";
+    const isEqual = matchPattern(left, right);
+    return { value: next === "!=" ? !isEqual : isEqual, pos: pos + 3 };
+  }
+
+  const numericOps = ["-eq", "-ne", "-lt", "-le", "-gt", "-ge"];
+  if (numericOps.includes(next)) {
+    const left = Number.parseInt(token, 10);
+    const right = Number.parseInt(args[pos + 2] ?? "0", 10);
+    let value = false;
+    switch (next) {
+      case "-eq":
+        value = left === right;
+        break;
+      case "-ne":
+        value = left !== right;
+        break;
+      case "-lt":
+        value = left < right;
+        break;
+      case "-le":
+        value = left <= right;
+        break;
+      case "-gt":
+        value = left > right;
+        break;
+      case "-ge":
+        value = left >= right;
+        break;
+    }
+    return { value, pos: pos + 3 };
+  }
+
+  // Single argument: true if non-empty
+  return { value: token !== undefined && token !== "", pos: pos + 1 };
 }
 
 export function matchPattern(value: string, pattern: string): boolean {

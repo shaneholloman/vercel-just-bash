@@ -402,7 +402,10 @@ export class Interpreter {
     }
     if (commandName === "[" || commandName === "test") {
       let testArgs = args;
-      if (commandName === "[" && args[args.length - 1] === "]") {
+      if (commandName === "[") {
+        if (args[args.length - 1] !== "]") {
+          return { stdout: "", stderr: "[: missing `]'\n", exitCode: 2 };
+        }
         testArgs = args.slice(0, -1);
       }
       return evaluateTestArgs(this.ctx, testArgs);
