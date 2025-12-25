@@ -1,50 +1,52 @@
 # bash-env
 
-A simulated bash environment with an in-memory (pluggable) virtual filesystem, written in TypeScript.
+A simulated bash environment with an in-memory virtual filesystem, written in TypeScript.
 
-Designed for agents exploring a filesystem with a "full" but secure bash tool.
+Designed for AI agents that need a secure, sandboxed bash environment.
+
+Supports optional network access via `curl` with secure-by-default URL filtering.
 
 ## Installation
 
 ```bash
-pnpm install
+npm install bash-env
 ```
 
 ## Usage
 
-### Programmatic API
+### Basic API
 
 ```typescript
 import { BashEnv } from "bash-env";
 
-// Default layout: starts in /home/user with /bin, /tmp
 const env = new BashEnv();
 await env.exec('echo "Hello" > greeting.txt');
 const result = await env.exec("cat greeting.txt");
 console.log(result.stdout); // "Hello\n"
+console.log(result.exitCode); // 0
+console.log(result.env); // Final environment after execution
+```
 
-// Custom files: starts in / with only specified files
-const custom = new BashEnv({
-  files: { "/data/file.txt": "content" },
-});
-await custom.exec("cat /data/file.txt");
+Each `exec()` is isolated—env vars, functions, and cwd don't persist across calls (filesystem does).
 
-// Binary files with Uint8Array
-const binary = new BashEnv({
-  files: { "/data.bin": new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]) },
-});
-const buf = await binary.fs.readFileBuffer("/data.bin"); // Uint8Array
+### Configuration
 
-// With custom execution limits
-const limited = new BashEnv({
-  maxCallDepth: 50, // Max recursion depth (default: 100)
-  maxLoopIterations: 5000, // Max loop iterations (default: 10000)
+```typescript
+const env = new BashEnv({
+  files: { "/data/file.txt": "content" }, // Initial files
+  env: { MY_VAR: "value" }, // Initial environment
+  cwd: "/app", // Starting directory (default: /home/user)
+  maxCallDepth: 50, // Max recursion (default: 100)
+  maxLoopIterations: 5000, // Max iterations (default: 10000)
 });
+
+// Per-exec overrides
+await env.exec("echo $TEMP", { env: { TEMP: "value" }, cwd: "/tmp" });
 ```
 
 ### Vercel Sandbox Compatible API
 
-BashEnv provides a `Sandbox` class that's API-compatible with [`@vercel/sandbox`](https://vercel.com/docs/vercel-sandbox), making it easy to swap implementations. You can start with BashEnv and switch to a real sandbox when you are ready.
+BashEnv provides a `Sandbox` class that's API-compatible with [`@vercel/sandbox`](https://vercel.com/docs/vercel-sandbox), making it easy to swap implementations. You can start with BashEnv and switch to a real sandbox when you need the power of a full VM (e.g. to run node, python, or custom binaries).
 
 ```typescript
 import { Sandbox } from "bash-env";
@@ -97,6 +99,25 @@ const finished = await cmd.wait();
 console.log(finished.exitCode); // 0
 ```
 
+### AI SDK Tool
+
+Create a bash tool for use with the [Vercel AI SDK](https://sdk.vercel.ai/):
+
+```typescript
+import { createBashTool } from "bash-env/ai";
+import { generateText } from "ai";
+
+const bashTool = createBashTool({
+  files: { "/data/users.json": '[{"name": "Alice"}, {"name": "Bob"}]' },
+});
+
+const result = await generateText({
+  model: "anthropic/claude-haiku-4.5",
+  tools: { bash: bashTool },
+  prompt: "Count the users in /data/users.json",
+});
+```
+
 ### Interactive Shell
 
 ```bash
@@ -117,7 +138,7 @@ pnpm shell --no-network
 
 ### Text Processing
 
-`awk`, `cut`, `grep`, `head`, `printf`, `sed`, `sort`, `tail`, `tr`, `uniq`, `wc`, `xargs`
+`awk`, `base64`, `cut`, `diff`, `grep`, `head`, `jq`, `printf`, `sed`, `sort`, `tail`, `tr`, `uniq`, `wc`, `xargs`
 
 ### Navigation & Environment
 
@@ -125,7 +146,7 @@ pnpm shell --no-network
 
 ### Shell Utilities
 
-`alias`, `bash`, `chmod`, `clear`, `false`, `history`, `sh`, `true`, `unalias`
+`alias`, `bash`, `chmod`, `clear`, `date`, `false`, `help`, `history`, `sh`, `sleep`, `true`, `unalias`
 
 ### Network Commands
 
@@ -193,6 +214,7 @@ const env = new BashEnv({
 ### Allow-List Security
 
 The allow-list enforces:
+
 - **Origin matching**: URLs must match the exact origin (scheme + host + port)
 - **Path prefix**: Only paths starting with the specified prefix are allowed
 - **HTTP method restrictions**: Only GET and HEAD by default (configure `allowedMethods` for more)
@@ -229,12 +251,7 @@ curl -X POST -H "Content-Type: application/json" \
 
 ## Execution Protection
 
-BashEnv includes protection against infinite loops and deep recursion:
-
-- **Max call depth**: Limits function recursion (default: 100)
-- **Max loop iterations**: Limits for/while/until loops (default: 10000)
-
-These can be configured via constructor options. Error messages include hints on how to increase limits if needed.
+BashEnv protects against infinite loops and deep recursion with configurable limits (`maxCallDepth`, `maxLoopIterations`). Error messages include hints on how to increase limits.
 
 ## Development
 
