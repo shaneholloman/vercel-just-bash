@@ -34,11 +34,18 @@ function createMockClock() {
   };
 }
 
-// Helper to wait for async operations (command lazy loading, etc.) to complete
-// Uses multiple iterations to ensure all microtasks and macrotasks complete
-async function tick(times = 50): Promise<void> {
-  for (let i = 0; i < times; i++) {
-    await new Promise((r) => setTimeout(r, 0));
+// Helper to wait for a condition to be true, with polling
+// More reliable than a fixed number of ticks
+async function waitFor(
+  condition: () => boolean,
+  timeoutMs = 1000,
+): Promise<void> {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 1));
   }
 }
 
@@ -293,11 +300,8 @@ describe("exec options", () => {
 
       const promise = env.exec("sleep 1");
 
-      // Wait for async command loading
-      await tick();
-
-      // Should be pending
-      expect(clock.pendingCount).toBe(1);
+      // Wait for sleep to be registered
+      await waitFor(() => clock.pendingCount === 1);
 
       // Advance clock
       clock.advance(1000);
@@ -314,8 +318,7 @@ describe("exec options", () => {
       // Start sleep with minute suffix
       const promise = env.exec("sleep 0.5m");
 
-      await tick();
-      expect(clock.pendingCount).toBe(1);
+      await waitFor(() => clock.pendingCount === 1);
 
       // 30 seconds = 0.5 minutes
       clock.advance(30000);
@@ -331,12 +334,11 @@ describe("exec options", () => {
       // GNU sleep sums multiple arguments
       const promise = env.exec("sleep 1 2");
 
-      await tick();
-      expect(clock.pendingCount).toBe(1);
+      await waitFor(() => clock.pendingCount === 1);
 
-      // First advance - not enough
+      // First advance - not enough (sleep 1 2 = 3 seconds total)
       clock.advance(2000);
-      await tick();
+      // pendingCount should still be 1
       expect(clock.pendingCount).toBe(1);
 
       // Second advance completes
@@ -357,8 +359,7 @@ describe("exec options", () => {
       const p2 = env.exec("sleep 2; echo done2");
       const p3 = env.exec("sleep 3; echo done3");
 
-      await tick();
-      expect(clock.pendingCount).toBe(3);
+      await waitFor(() => clock.pendingCount === 3);
 
       // Advance 1 second - first should complete
       clock.advance(1000);
@@ -394,8 +395,7 @@ describe("exec options", () => {
         env: { B: "value_B" },
       });
 
-      await tick();
-      expect(clock.pendingCount).toBe(2);
+      await waitFor(() => clock.pendingCount === 2);
 
       // Advance clock to complete both
       clock.advance(1000);
@@ -422,8 +422,7 @@ describe("exec options", () => {
       // Command 2: read VAR immediately (before p1's sleep completes)
       const p2 = env.exec("sleep 1; echo $VAR", { env: { MARKER: "2" } });
 
-      await tick();
-      expect(clock.pendingCount).toBe(2);
+      await waitFor(() => clock.pendingCount === 2);
 
       // Advance 1 second - p2 completes first
       clock.advance(1000);
@@ -458,8 +457,7 @@ describe("exec options", () => {
         );
       }
 
-      await tick();
-      expect(clock.pendingCount).toBe(10);
+      await waitFor(() => clock.pendingCount === 10);
 
       // Advance clock to complete all
       clock.advance(2000);
@@ -496,8 +494,7 @@ describe("exec options", () => {
         { env: { CMD: "2" } },
       );
 
-      await tick();
-      expect(clock.pendingCount).toBe(2);
+      await waitFor(() => clock.pendingCount === 2);
 
       // Advance 1 second
       clock.advance(1000);
@@ -533,8 +530,7 @@ describe("exec options", () => {
       const p2 = env.exec("sleep 1; pwd; cat file.txt", { cwd: "/tmp" });
       const p3 = env.exec("sleep 1; pwd; cat file.txt", { cwd: "/var" });
 
-      await tick();
-      expect(clock.pendingCount).toBe(3);
+      await waitFor(() => clock.pendingCount === 3);
       clock.advance(1000);
 
       const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
@@ -563,7 +559,7 @@ describe("exec options", () => {
         env: { MARKER: "2" },
       });
 
-      await tick();
+      await waitFor(() => clock.pendingCount === 2);
       clock.advance(1000);
       const r1 = await p1;
       expect(r1.stdout).toBe("from_p1\n");
@@ -590,7 +586,7 @@ describe("exec options", () => {
         env: { MARKER: "2" },
       });
 
-      await tick();
+      await waitFor(() => clock.pendingCount === 2);
       clock.advance(1000);
       const r1 = await p1;
       expect(r1.stdout).toBe(""); // errexit stopped execution
@@ -613,7 +609,7 @@ describe("exec options", () => {
       const p1 = env.exec("export COUNTER=from_p1; sleep 1; echo done1");
       const p2 = env.exec("sleep 2; echo $COUNTER");
 
-      await tick();
+      await waitFor(() => clock.pendingCount === 2);
       clock.advance(1000);
       await p1;
 
@@ -641,7 +637,7 @@ describe("exec options", () => {
         );
       }
 
-      await tick();
+      await waitFor(() => clock.pendingCount === 20);
       // Advance clock
       clock.advance(100);
       const results = await Promise.all(promises);
